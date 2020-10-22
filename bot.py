@@ -1,8 +1,10 @@
 import asyncio
 import functools
+import json
 import logging
 import os
 import traceback
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageColor
 from telethon import TelegramClient, events
@@ -146,15 +148,19 @@ class AvatarBot:
         image = image.convert("RGB")
         image.save(avatar_filename)
 
-        await self.bot.send_file(event.chat, avatar_filename)
-
-        os.remove(avatar_filename)
+        try:
+            await self.bot.send_file(event.chat, avatar_filename)
+        except (UserIsBlockedError, InputUserDeactivatedError):
+            logger.error("Can't send file to user")
+        finally:
+            os.remove(avatar_filename)
 
 
 async def main():
-    api_id: int = int(os.environ["API_ID"])
-    api_hash: str = os.environ["API_HASH"]
-    token: str = os.environ["TG_TOKEN"]
+    config = json.loads(Path("config.json").read_text())
+    api_id: int = int(os.getenv("API_ID") or config["API_ID"])
+    api_hash: str = os.getenv("API_HASH") or config["API_HASH"]
+    token: str = os.getenv("TG_TOKEN") or config["TG_TOKEN"]
     bot = await AvatarBot.create(api_id, api_hash, token)
     await bot.start_bot()
 
