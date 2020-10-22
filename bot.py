@@ -6,8 +6,11 @@ import traceback
 
 from PIL import Image, ImageDraw, ImageFont, ImageColor
 from telethon import TelegramClient, events
-from telethon.tl.types import User
+from telethon.errors import UserIsBlockedError, InputUserDeactivatedError
+from telethon.tl.types import User, Message
 from telethon.events.newmessage import NewMessage
+
+MAX_MESSAGE_LENGTH = 4096  # https://core.telegram.org/bots/api#message
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -16,32 +19,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def log_on_error():
-    def wrapper(function):
-        @functools.wraps(function)
-        async def wrapped(self: 'AvatarBot', event: NewMessage.Event):
-            try:
-                result = await function(self, event)
-                return result
-            except Exception as error:
-                logger.exception(f"Error: {error} on event: {event}")
-                await self.bot.send_message(
-                    "@zotho",
-                    (
-                        f"Avatar bot error:\n"
-                        f"<code>{error}</code>\n\n"
-                        f"Traceback:\n"
-                        f"<code>{traceback.format_exc()}</code>\n"
-                        f"Event:\n"
-                        f"<code>{event}</code>"
-                    ),
-                    parse_mode="html",
-                )
-                await event.message.respond("Произошла непредвиденная ошибка.. Попробуем разобраться")
-                raise
+async def safe_respond(message: Message, text: str):
+    try:
+        await message.respond(text)
+    except (UserIsBlockedError, InputUserDeactivatedError):
+        logger.error("Can't send message to user")
 
-        return wrapped
-    return wrapper
+
+def log_on_error(function):
+    @functools.wraps(function)
+    async def wrapped(self: 'AvatarBot', event: NewMessage.Event):
+        try:
+            result = await function(self, event)
+            return result
+        except Exception as error:
+            logger.exception(f"Error: {error} on event: {event}")
+            admin_message = (
+                f"Avatar bot error:\n"
+                f"<code>{error}</code>\n\n"
+                f"Traceback:\n"
+                f"<code>{traceback.format_exc()}</code>\n"
+                f"Event:\n"
+                f"<code>{event}</code>"
+            )[:MAX_MESSAGE_LENGTH]
+            await self.bot.send_message(
+                "@zotho",
+                admin_message,
+                parse_mode="html",
+            )
+            await safe_respond(event.message, "Произошла непредвиденная ошибка.. Попробуем разобраться")
+            raise
+    return wrapped
 
 
 class AvatarBot:
@@ -93,7 +101,7 @@ class AvatarBot:
         self = cls(bot)
         return self
 
-    @log_on_error()
+    @log_on_error
     async def start_handler(self, event: NewMessage.Event):
         user: User = event.chat
         logger.info(f"Process start: {user.id} {user.username} {user.first_name}")
@@ -104,27 +112,29 @@ class AvatarBot:
         else:
             logger.info(f"No avatar for @{user.username} ({user.id})")
 
-        await event.message.respond("Вы можете отправить мне любое изображение и я его обработаю..")
+        await safe_respond(event.message, "Вы можете отправить мне любое изображение и я его обработаю..")
 
-    @log_on_error()
+    @log_on_error
     async def image_handler(self, event: NewMessage.Event):
         user: User = event.chat
         logger.info(f"Process image: {user.id} {user.username} {user.first_name}")
-        avatar_filename = await self.bot.download_media(event.message)
+        message: Message = event.message
+        avatar_filename = await self.bot.download_media(message)
 
         if avatar_filename is not None:
             await self.reply_photo(avatar_filename, event)
         else:
-            await event.message.respond("Не могу найти фото для загрузки")
+            await safe_respond(message, "Не могу найти фото для загрузки")
 
     async def reply_photo(self, avatar_filename: str, event: NewMessage.Event):
+        message: Message = event.message
         image: Image.Image = Image.open(avatar_filename).copy().convert("RGBA")
         width, height = size = image.size
         if max(size) > 4000:
-            await event.message.respond(f"Слишком большое изображение: {width}:{height}")
+            await safe_respond(message, f"Слишком большое изображение: {width}:{height}")
             return
         elif min(size) < 10:
-            await event.message.respond(f"Слишком маленькое изображение: {width}:{height}")
+            await safe_respond(message, f"Слишком маленькое изображение: {width}:{height}")
             return
 
         rect_side = min(size)
